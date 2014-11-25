@@ -2791,6 +2791,7 @@ int FileStore::read(
   uint64_t offset,
   size_t len,
   bufferlist& bl,
+  uint32_t op_flags,
   bool allow_eio)
 {
   int got;
