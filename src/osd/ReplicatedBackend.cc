@@ -691,7 +691,8 @@ void ReplicatedBackend::sub_op_modify_reply(OpRequestRef op)
 void ReplicatedBackend::be_deep_scrub(
   const hobject_t &poid,
   ScrubMap::object &o,
-  ThreadPool::TPHandle &handle) {
+  ThreadPool::TPHandle &handle)
+{
   bufferhash h, oh;
   bufferlist bl, hdrbl;
   int r;
@@ -709,7 +710,7 @@ void ReplicatedBackend::be_deep_scrub(
     bl.clear();
   }
   if (r == -EIO) {
-    dout(25) << "_scan_list  " << poid << " got "
+    dout(25) << __func__ << "  " << poid << " got "
 	     << r << " on read, read_error" << dendl;
     o.read_error = true;
   }
@@ -729,7 +730,7 @@ void ReplicatedBackend::be_deep_scrub(
     oh << bl;
     bl.clear();
   } else if (r == -EIO) {
-    dout(25) << "_scan_list  " << poid << " got "
+    dout(25) << __func__ << "  " << poid << " got "
 	     << r << " on omap header read, read_error" << dendl;
     o.read_error = true;
   }
@@ -756,7 +757,7 @@ void ReplicatedBackend::be_deep_scrub(
     bl.clear();
   }
   if (iter->status() == -EIO) {
-    dout(25) << "_scan_list  " << poid << " got "
+    dout(25) << __func__ << "  " << poid << " got "
 	     << r << " on omap scan, read_error" << dendl;
     o.read_error = true;
   }
