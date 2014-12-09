@@ -226,6 +226,7 @@ OPTION(mon_mds_force_trim_to, OPT_INT, 0)   // force mon to trim mdsmaps to this
 // dump transactions
 OPTION(mon_debug_dump_transactions, OPT_BOOL, false)
 OPTION(mon_debug_dump_location, OPT_STR, "/var/log/ceph/$cluster-$name.tdump")
+OPTION(mon_debug_inject_transaction_apply_delay, OPT_DOUBLE, 0)
 
 OPTION(mon_sync_provider_kill_at, OPT_INT, 0)  // kill the sync provider at a specific point in the work flow
 OPTION(mon_sync_requester_kill_at, OPT_INT, 0) // kill the sync requester at a specific point in the work flow

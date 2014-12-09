@@ -304,6 +304,11 @@ class MonitorDBStore
       : store(s), t(t), oncommit(f)
     {}
     void finish(int r) {
+      if (g_conf->mon_debug_inject_transaction_apply_delay) {
+        utime_t t;
+        t.set_from_double(g_conf->mon_debug_inject_transaction_apply_delay);
+        t.sleep();
+      }
       int ret = store->apply_transaction(t);
       oncommit->complete(ret);
     }
