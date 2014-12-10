@@ -1375,7 +1375,7 @@ int get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
   return 0;
 }
 
-int get_object(ObjectStore *store, coll_t coll, bufferlist &bl)
+int get_object(ObjectStore *store, coll_t coll, bufferlist &bl, OSDMap &curmap)
 {
   ObjectStore::Transaction tran;
   ObjectStore::Transaction *t = &tran;
@@ -1389,6 +1389,25 @@ int get_object(ObjectStore *store, coll_t coll, bufferlist &bl)
   spg_t pg;
   coll.is_pg_prefix(pg);
   SnapMapper mapper(&driver, 0, 0, 0, pg.shard);
+
+  object_t oid = ob.hoid.hobj.oid;
+  object_locator_t loc(ob.hoid.hobj);
+  // XXX: Do we need to set the hash?
+  // loc.hash = ob.hoid.hash;
+  pg_t raw_pgid = curmap.object_locator_to_pg(oid, loc);
+  pg_t pgid = curmap.raw_pg_to_pg(raw_pgid);
+  
+  spg_t import_pgid;
+  snapid_t import_snap;
+  if (coll.is_pg(import_pgid, import_snap) == false) {
+    cerr << "INTERNAL ERROR: Bad collection during import" << std::endl;
+    return 1;
+  }
+  if (import_pgid.pgid != pgid || import_pgid.shard != ob.hoid.shard_id || import_snap != ob.hoid.hobj.snap) {
+    cerr << "Skipping object '" << ob.hoid << "' which no longer belongs in exported pg" << std::endl;
+    skip_object(bl);
+    return 0;
+  }
 
   t->touch(coll, ob.hoid);
 
@@ -1472,8 +1491,7 @@ int get_pg_metadata(ObjectStore *store, bufferlist &bl, metadata_section &ms, co
 	NULL)) {
       // ms.past_intervals.clear();
       // ms.map_epoch = sb.current_epoch;
-      cerr << "Import failed due to a split" << std::endl;
-      return EINVAL;    
+      cerr << "WARNING: Split occurred, some objects could be ignored" << std::endl;
     }
   }
 
@@ -1673,7 +1691,7 @@ int do_import(ObjectStore *store, OSDSuperblock& sb)
     cerr << "Can't find local OSDMap" << std::endl;
     return ret;
   }
-  if (curmap.get_pg_pool(pgid.pgid.m_pool) == NULL) {
+  if (!curmap.have_pg_pool(pgid.pgid.m_pool)) {
     cerr << "Pool " << pgid.pgid.m_pool << " no longer exists" << std::endl;
     return 1;
   }
@@ -1714,7 +1732,7 @@ int do_import(ObjectStore *store, OSDSuperblock& sb)
     }
     switch(type) {
     case TYPE_OBJECT_BEGIN:
-      ret = get_object(store, coll, ebl);
+      ret = get_object(store, coll, ebl, curmap);
       if (ret) return ret;
       break;
     case TYPE_PG_METADATA:
