@@ -912,12 +912,15 @@ void Paxos::commit_finish()
 
     assert(g_conf->paxos_kill_at != 10);
 
-    finish_round();
+    // if proposals are suspended, don't do anything else.
+    if (!proposals_suspended) {
+      finish_round();
 
-    // wake (other) people up
-    finish_contexts(g_ceph_context, waiting_for_active);
-    finish_contexts(g_ceph_context, waiting_for_readable);
-    finish_contexts(g_ceph_context, waiting_for_writeable);
+      // wake (other) people up
+      finish_contexts(g_ceph_context, waiting_for_active);
+      finish_contexts(g_ceph_context, waiting_for_readable);
+      finish_contexts(g_ceph_context, waiting_for_writeable);
+    }
   }
 }
 
@@ -1347,11 +1350,17 @@ void Paxos::restart()
 
   if (is_writing() || is_writing_previous()) {
     dout(10) << __func__ << " flushing" << dendl;
+    // suspend proposals to avoid proposing the next value in the proposal
+    // queue, if any, once the current proposal finishes.
+    suspend_proposals();
     mon->lock.Unlock();
     mon->store->flush();
     mon->lock.Lock();
     dout(10) << __func__ << " flushed" << dendl;
   }
+  // unsuspend solely after flushing store, so that current proposal doesn't
+  // trigger a new proposal.
+  unsuspend_proposals();
   state = STATE_RECOVERING;
 
   finish_contexts(g_ceph_context, proposals, -EAGAIN);
@@ -1527,6 +1536,20 @@ bool Paxos::propose_new_value(bufferlist& bl, Context *onfinished)
   propose_queued();
   
   return true;
+}
+
+void Paxos::suspend_proposals()
+{
+  dout(5) << __func__ << " "
+          << proposals.size() << " proposals in queue" << dendl;
+  proposals_suspended = true;
+}
+
+void Paxos::unsuspend_proposals()
+{
+  dout(5) << __func__ << " "
+          << proposals.size() << " proposals in queue" << dendl;
+  proposals_suspended = false;
 }
 
 bool Paxos::is_consistent()

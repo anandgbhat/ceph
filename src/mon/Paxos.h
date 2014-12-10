@@ -582,6 +582,7 @@ private:
   /**
    * @}
    */
+  bool proposals_suspended;
 
   /**
    * @defgroup Paxos_h_sync_warns Synchronization warnings
@@ -1046,6 +1047,10 @@ private:
   void warn_on_future_time(utime_t t, entity_name_t from);
 
   /**
+   */
+  void suspend_proposals();
+  void unsuspend_proposals();
+  /**
    * Queue a new proposal by pushing it at the back of the queue; do not
    * propose it.
    *
@@ -1093,6 +1098,7 @@ public:
 		   lease_ack_timeout_event(0),
 		   lease_timeout_event(0),
 		   accept_timeout_event(0),
+                   proposals_suspended(false),
 		   clock_drift_warned(0),
 		   trimming(false) { }
 
