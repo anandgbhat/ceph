@@ -71,6 +71,7 @@
 #include "messages/MOSDPGTemp.h"
 
 #include "messages/MOSDMap.h"
+#include "messages/MMonGetOSDMap.h"
 #include "messages/MOSDPGNotify.h"
 #include "messages/MOSDPGQuery.h"
 #include "messages/MOSDPGLog.h"
@@ -2648,7 +2649,8 @@ PG *OSD::get_pg_or_queue_for_pg(const spg_t& pgid, OpRequestRef& op)
 {
   Session *session = static_cast<Session*>(
     op->get_req()->get_connection()->get_priv());
-  assert(session);
+  if (!session)
+    return NULL;
   // get_pg_or_queue_for_pg is only called from the fast_dispatch path where
   // the session_dispatch_lock must already be held.
   assert(session->session_dispatch_lock.is_locked());
@@ -5407,14 +5409,15 @@ void OSD::ms_fast_dispatch(Message *m)
   }
   OSDMapRef nextmap = service.get_nextmap_reserved();
   Session *session = static_cast<Session*>(m->get_connection()->get_priv());
-  assert(session);
-  {
-    Mutex::Locker l(session->session_dispatch_lock);
-    update_waiting_for_pg(session, nextmap);
-    session->waiting_on_map.push_back(op);
-    dispatch_session_waiting(session, nextmap);
+  if (session) {
+    {
+      Mutex::Locker l(session->session_dispatch_lock);
+      update_waiting_for_pg(session, nextmap);
+      session->waiting_on_map.push_back(op);
+      dispatch_session_waiting(session, nextmap);
+    }
+    session->put();
   }
-  session->put();
   service.release_map(nextmap);
 }
 
@@ -5424,10 +5427,12 @@ void OSD::ms_fast_preprocess(Message *m)
     if (m->get_type() == CEPH_MSG_OSD_MAP) {
       MOSDMap *mm = static_cast<MOSDMap*>(m);
       Session *s = static_cast<Session*>(m->get_connection()->get_priv());
-      s->received_map_lock.Lock();
-      s->received_map_epoch = mm->get_last();
-      s->received_map_lock.Unlock();
-      s->put();
+      if (s) {
+	s->received_map_lock.Lock();
+	s->received_map_epoch = mm->get_last();
+	s->received_map_lock.Unlock();
+	s->put();
+      }
     }
   }
 }
@@ -5632,13 +5637,15 @@ bool OSD::dispatch_op_fast(OpRequestRef& op, OSDMapRef& osdmap)
   if (msg_epoch > osdmap->get_epoch()) {
     Session *s = static_cast<Session*>(op->get_req()->
 				       get_connection()->get_priv());
-    s->received_map_lock.Lock();
-    epoch_t received_epoch = s->received_map_epoch;
-    s->received_map_lock.Unlock();
-    if (received_epoch < msg_epoch) {
-      osdmap_subscribe(msg_epoch, false);
+    if (s) {
+      s->received_map_lock.Lock();
+      epoch_t received_epoch = s->received_map_epoch;
+      s->received_map_lock.Unlock();
+      if (received_epoch < msg_epoch) {
+	osdmap_subscribe(msg_epoch, false);
+      }
+      s->put();
     }
-    s->put();
     return false;
   }
 
@@ -6017,9 +6024,6 @@ void OSD::handle_osd_map(MOSDMap *m)
     return;
   }
 
-  // even if this map isn't from a mon, we may have satisfied our subscription
-  monc->sub_got("osdmap", last);
-
   // missing some?
   bool skip_maps = false;
   if (first > osdmap->get_epoch() + 1) {
@@ -6078,8 +6082,7 @@ void OSD::handle_osd_map(MOSDMap *m)
       OSDMap *o = new OSDMap;
       if (e > 1) {
 	bufferlist obl;
-	OSDMapRef prev = get_map(e - 1);
-	prev->encode(obl);
+	get_map_bl(e - 1, obl);
 	o->decode(obl);
       }
 
@@ -6095,7 +6098,27 @@ void OSD::handle_osd_map(MOSDMap *m)
 	last_marked_full = e;
 
       bufferlist fbl;
-      o->encode(fbl);
+      o->encode(fbl, inc.encode_features | CEPH_FEATURE_RESERVED);
+
+      bool injected_failure = false;
+      if (g_conf->osd_inject_bad_map_crc_probability > 0 &&
+	  (rand() % 10000) < g_conf->osd_inject_bad_map_crc_probability*10000.0) {
+	derr << __func__ << " injecting map crc failure" << dendl;
+	injected_failure = true;
+      }
+
+      if (o->get_crc() != inc.full_crc || injected_failure) {
+	dout(2) << "got incremental " << e
+		<< " but failed to encode full with correct crc; requesting"
+		<< dendl;
+	clog->warn() << "failed to encode map e" << e << " with expected crc\n";
+	MMonGetOSDMap *req = new MMonGetOSDMap;
+	req->request_full(e, last);
+	monc->send_mon_message(req);
+	last = e - 1;
+	break;
+      }
+
 
       hobject_t fulloid = get_osdmap_pobject_name(e);
       t.write(META_COLL, fulloid, 0, fbl.length(), fbl);
@@ -6105,6 +6128,16 @@ void OSD::handle_osd_map(MOSDMap *m)
     }
 
     assert(0 == "MOSDMap lied about what maps it had?");
+  }
+
+  // even if this map isn't from a mon, we may have satisfied our subscription
+  monc->sub_got("osdmap", last);
+
+  if (last <= osdmap->get_epoch()) {
+    dout(10) << " no new maps here, dropping" << dendl;
+    delete _t;
+    m->put();
+    return;
   }
 
   if (superblock.oldest_map) {
@@ -8098,7 +8131,7 @@ void OSD::handle_replica_op(OpRequestRef& op, OSDMapRef& osdmap)
     op->send_map_update = should_share_map;
     op->sent_epoch = m->map_epoch;
     enqueue_op(pg, op);
-  } else if (should_share_map) {
+  } else if (should_share_map && m->get_connection()->is_connected()) {
     C_SendMap *send_map = new C_SendMap(this, m->get_source(),
 					m->get_connection(),
                                         osdmap, m->map_epoch);
