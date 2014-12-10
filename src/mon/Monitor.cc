@@ -853,6 +853,8 @@ void Monitor::wait_for_paxos_write()
 {
   if (paxos->is_writing() || paxos->is_writing_previous()) {
     dout(10) << __func__ << " flushing pending write" << dendl;
+    // we don't want to allow new proposals
+    paxos->suspend_proposals();
     lock.Unlock();
     store->flush();
     lock.Lock();
@@ -4054,6 +4056,10 @@ void Monitor::scrub_finish()
     clog->info() << "scrub ok on " << quorum << ": " << mine << "\n";
 
   scrub_reset();
+  if (is_leader()) {
+    // proposals were suspended when we waited for paxos.
+    paxos->unsuspend_proposals();
+  }
 }
 
 void Monitor::scrub_reset()
