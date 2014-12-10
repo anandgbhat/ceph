@@ -690,10 +690,12 @@ void ReplicatedBackend::sub_op_modify_reply(OpRequestRef op)
 
 void ReplicatedBackend::be_deep_scrub(
   const hobject_t &poid,
+  uint32_t seed,
   ScrubMap::object &o,
   ThreadPool::TPHandle &handle)
 {
-  bufferhash h, oh;
+  dout(10) << __func__ << " " << poid << " seed " << seed << dendl;
+  bufferhash h(seed), oh(seed);
   bufferlist bl, hdrbl;
   int r;
   __u64 pos = 0;
@@ -723,7 +725,9 @@ void ReplicatedBackend::be_deep_scrub(
     ghobject_t(
       poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
     &hdrbl, true);
-  if (r == 0) {
+  // NOTE: bobtail to giant, we would crc the head even if it didn't exist.
+  // that changes at the same time we start using a non-zero seed.
+  if (r == 0 && (seed == 0 || hdrbl.length() > 0)) {
     dout(25) << "CRC header " << string(hdrbl.c_str(), hdrbl.length())
              << dendl;
     ::encode(hdrbl, bl);
