@@ -229,6 +229,11 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
       derr << "inc for epoch " << osdmap.get_epoch() << " has full_crc "
 	   << pending_inc.full_crc << " but actual is " << osdmap.crc
 	   << dendl;
+      derr << "full map dump (crc " << full_bl.crc32c(-1) << "):\n";
+      full_bl.hexdump(*_dout);
+      *_dout << "\ninc map dump (crc " << inc_bl.crc32c(-1) << "):\n";
+      inc_bl.hexdump(*_dout);
+      *_dout << dendl;
       assert(0 == "got mismatched crc encoding full map");
     }
 
