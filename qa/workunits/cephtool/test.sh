@@ -648,6 +648,10 @@ function test_mon_mds()
   data3_pool=$(ceph osd dump | grep 'pool.*data3' | awk '{print $2;}')
   ceph mds add_data_pool $data2_pool
   ceph mds add_data_pool $data3_pool
+  ceph mds add_data_pool 100 >& $TMPFILE || true
+  check_response "Error ENOENT"
+  ceph mds add_data_pool foobarbaz >& $TMPFILE || true
+  check_response "Error ENOENT"
   ceph mds remove_data_pool $data2_pool
   ceph mds remove_data_pool $data3_pool
   ceph osd pool delete data2 data2 --yes-i-really-really-mean-it
@@ -761,6 +765,21 @@ function test_mon_mds()
   fail_all_mds
   ceph fs rm cephfs --yes-i-really-mean-it
 
+  # Create a FS and check that we can subsequently add a cache tier to it
+  ceph fs new cephfs fs_metadata fs_data
+
+  # Adding overlay to FS pool should be permitted, RADOS clients handle this.
+  ceph osd tier add fs_metadata mds-tier
+  ceph osd tier cache-mode mds-tier writeback
+  ceph osd tier set-overlay fs_metadata mds-tier
+
+  # Clean up FS
+  fail_all_mds
+  ceph fs rm cephfs --yes-i-really-mean-it
+
+  # Clean up overlay/tier relationship
+  ceph osd tier remove-overlay fs_metadata
+  ceph osd tier remove fs_metadata mds-tier
 
   ceph osd pool delete mds-tier mds-tier --yes-i-really-really-mean-it
   ceph osd pool delete mds-ec-pool mds-ec-pool --yes-i-really-really-mean-it
@@ -809,12 +828,18 @@ function test_mon_osd()
   #
   # osd crush
   #
+  ceph osd crush reweight-all
   ceph osd crush tunables legacy
   ceph osd crush show-tunables | grep argonaut
   ceph osd crush tunables bobtail
   ceph osd crush show-tunables | grep bobtail
   ceph osd crush tunables firefly
   ceph osd crush show-tunables | grep firefly
+
+  ceph osd crush set-tunable straw_calc_version 0
+  ceph osd crush get-tunable straw_calc_version | grep 0
+  ceph osd crush set-tunable straw_calc_version 1
+  ceph osd crush get-tunable straw_calc_version | grep 1
 
   #
   # osd scrub
@@ -878,10 +903,14 @@ function test_mon_osd()
 
   ceph osd rm 0 2>&1 | grep 'EBUSY'
 
+  local old_osds=$(echo $(ceph osd ls))
   id=`ceph osd create`
   ceph osd lost $id --yes-i-really-mean-it
   expect_false ceph osd setmaxosd $id
-  ceph osd rm $id
+  local new_osds=$(echo $(ceph osd ls))
+  for id in $(echo $new_osds | sed -e "s/$old_osds//") ; do
+      ceph osd rm $id
+  done
 
   uuid=`uuidgen`
   id=`ceph osd create $uuid`
@@ -1291,27 +1320,31 @@ function test_osd_bench()
 #
 
 set +x
-TESTS=(
-  mon_injectargs
-  mon_injectargs_SI
-  tiering
-  auth
-  auth_profiles
-  mon_misc
-  mon_mon
-  mon_osd
-  mon_osd_pool
-  mon_osd_pool_quota
-  mon_pg
-  mon_osd_pool_set
-  mon_osd_tiered_pool_set
-  mon_osd_erasure_code
-  mon_osd_misc
-  mon_heap_profiler
-  osd_bench
-  mds_tell
-  mon_mds
-)
+MON_TESTS+=" mon_injectargs"
+MON_TESTS+=" mon_injectargs_SI"
+MON_TESTS+=" tiering"
+MON_TESTS+=" auth"
+MON_TESTS+=" auth_profiles"
+MON_TESTS+=" mon_misc"
+MON_TESTS+=" mon_mon"
+MON_TESTS+=" mon_osd"
+MON_TESTS+=" mon_osd_pool"
+MON_TESTS+=" mon_osd_pool_quota"
+MON_TESTS+=" mon_pg"
+MON_TESTS+=" mon_osd_pool_set"
+MON_TESTS+=" mon_osd_tiered_pool_set"
+MON_TESTS+=" mon_osd_erasure_code"
+MON_TESTS+=" mon_osd_misc"
+MON_TESTS+=" mon_heap_profiler"
+
+OSD_TESTS+=" osd_bench"
+
+MDS_TESTS+=" mds_tell"
+MDS_TESTS+=" mon_mds"
+
+TESTS+=$MON_TESTS
+TESTS+=$OSD_TESTS
+TESTS+=$MDS_TESTS
 
 #
 # "main" follows
@@ -1320,7 +1353,7 @@ TESTS=(
 function list_tests()
 {
   echo "AVAILABLE TESTS"
-  for i in ${TESTS[@]}; do
+  for i in $TESTS; do
     echo "  $i"
   done
 }
@@ -1347,6 +1380,15 @@ while [[ $# -gt 0 ]]; do
     "--no-sanity-check" )
       sanity_check=false
       ;;
+    "--test-mon" )
+      tests_to_run+="$MON_TESTS"
+      ;;
+    "--test-osd" )
+      tests_to_run+="$OSD_TESTS"
+      ;;
+    "--test-mds" )
+      tests_to_run+="$MDS_TESTS"
+      ;;
     "-t" )
       shift
       if [[ -z "$1" ]]; then
@@ -1354,7 +1396,7 @@ while [[ $# -gt 0 ]]; do
         usage ;
         exit 1
       fi
-      tests_to_run=("${tests_to_run[@]}" "$1")
+      tests_to_run+=" $1"
       ;;
     "-h" )
       usage ;
@@ -1369,14 +1411,14 @@ if [[ $do_list -eq 1 ]]; then
   exit 0
 fi
 
-if [[ ${#tests_to_run[@]} -eq 0 ]]; then
-  tests_to_run=("${TESTS[@]}")
+if test -z "$tests_to_run" ; then
+  tests_to_run="$TESTS"
 fi
 
 if $sanity_check ; then
     wait_no_osd_down
 fi
-for i in ${tests_to_run[@]}; do
+for i in $tests_to_run; do
   if $sanity_check ; then
       check_no_osd_down
   fi

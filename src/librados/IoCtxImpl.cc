@@ -330,6 +330,37 @@ int librados::IoCtxImpl::snap_get_stamp(uint64_t snapid, time_t *t)
 
 // IO
 
+int librados::IoCtxImpl::nlist(Objecter::NListContext *context, int max_entries)
+{
+  Cond cond;
+  bool done;
+  int r = 0;
+  object_t oid;
+  Mutex mylock("IoCtxImpl::nlist::mylock");
+
+  if (context->at_end())
+    return 0;
+
+  context->max_entries = max_entries;
+  context->nspace = oloc.nspace;
+
+  objecter->list_nobjects(context, new C_SafeCond(&mylock, &cond, &done, &r));
+
+  mylock.Lock();
+  while(!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
+
+  return r;
+}
+
+uint32_t librados::IoCtxImpl::nlist_seek(Objecter::NListContext *context,
+					uint32_t pos)
+{
+  context->list.clear();
+  return objecter->list_nobjects_seek(context, pos);
+}
+
 int librados::IoCtxImpl::list(Objecter::ListContext *context, int max_entries)
 {
   Cond cond;
@@ -366,15 +397,6 @@ int librados::IoCtxImpl::create(const object_t& oid, bool exclusive)
   ::ObjectOperation op;
   prepare_assert_ops(&op);
   op.create(exclusive);
-  return operate(oid, &op, NULL);
-}
-
-int librados::IoCtxImpl::create(const object_t& oid, bool exclusive,
-				const std::string& category)
-{
-  ::ObjectOperation op;
-  prepare_assert_ops(&op);
-  op.create(exclusive, category);
   return operate(oid, &op, NULL);
 }
 

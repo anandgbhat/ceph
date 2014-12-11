@@ -24,7 +24,6 @@
 #include "common/admin_socket.h"
 #include "common/Timer.h"
 #include "common/RWLock.h"
-#include "include/rados/rados_types.h"
 #include "include/rados/rados_types.hpp"
 
 #include <list>
@@ -216,14 +215,17 @@ struct ObjectOperation {
     flags |= CEPH_OSD_FLAG_PGOP;
   }
 
+  void pg_nls(uint64_t count, bufferlist& filter, collection_list_handle_t cookie, epoch_t start_epoch) {
+    if (filter.length() == 0)
+      add_pgls(CEPH_OSD_OP_PGNLS, count, cookie, start_epoch);
+    else
+      add_pgls_filter(CEPH_OSD_OP_PGNLS_FILTER, count, filter, cookie, start_epoch);
+    flags |= CEPH_OSD_FLAG_PGOP;
+  }
+
   void create(bool excl) {
     OSDOp& o = add_op(CEPH_OSD_OP_CREATE);
     o.op.flags = (excl ? CEPH_OSD_OP_FLAG_EXCL : 0);
-  }
-  void create(bool excl, const string& category) {
-    OSDOp& o = add_op(CEPH_OSD_OP_CREATE);
-    o.op.flags = (excl ? CEPH_OSD_OP_FLAG_EXCL : 0);
-    ::encode(category, o.indata);
   }
 
   struct C_ObjectOperation_stat : public Context {
@@ -622,7 +624,6 @@ struct ObjectOperation {
     object_copy_cursor_t *cursor;
     uint64_t *out_size;
     utime_t *out_mtime;
-    string *out_category;
     std::map<std::string,bufferlist> *out_attrs;
     bufferlist *out_data, *out_omap_header;
     std::map<std::string,bufferlist> *out_omap;
@@ -632,7 +633,6 @@ struct ObjectOperation {
     C_ObjectOperation_copyget(object_copy_cursor_t *c,
 			      uint64_t *s,
 			      utime_t *m,
-			      string *cat,
 			      std::map<std::string,bufferlist> *a,
 			      bufferlist *d, bufferlist *oh,
 			      std::map<std::string,bufferlist> *o,
@@ -640,7 +640,7 @@ struct ObjectOperation {
 			      snapid_t *osnap_seq,
 			      int *r)
       : cursor(c),
-	out_size(s), out_mtime(m), out_category(cat),
+	out_size(s), out_mtime(m),
 	out_attrs(a), out_data(d), out_omap_header(oh),
 	out_omap(o), out_snaps(osnaps), out_snap_seq(osnap_seq),
 	prval(r) {}
@@ -655,8 +655,6 @@ struct ObjectOperation {
 	  *out_size = copy_reply.size;
 	if (out_mtime)
 	  *out_mtime = copy_reply.mtime;
-	if (out_category)
-	  *out_category = copy_reply.category;
 	if (out_attrs)
 	  *out_attrs = copy_reply.attrs;
 	if (out_data)
@@ -681,7 +679,6 @@ struct ObjectOperation {
 		uint64_t max,
 		uint64_t *out_size,
 		utime_t *out_mtime,
-		string *out_category,
 		std::map<std::string,bufferlist> *out_attrs,
 		bufferlist *out_data,
 		bufferlist *out_omap_header,
@@ -696,7 +693,7 @@ struct ObjectOperation {
     unsigned p = ops.size() - 1;
     out_rval[p] = prval;
     C_ObjectOperation_copyget *h =
-      new C_ObjectOperation_copyget(cursor, out_size, out_mtime, out_category,
+      new C_ObjectOperation_copyget(cursor, out_size, out_mtime,
                                     out_attrs, out_data, out_omap_header,
 				    out_omap, out_snaps, out_snap_seq, prval);
     out_bl[p] = &h->bl;
@@ -1249,6 +1246,71 @@ public:
 
 
   // Pools and statistics 
+  struct NListContext {
+    int current_pg;
+    collection_list_handle_t cookie;
+    epoch_t current_pg_epoch;
+    int starting_pg_num;
+    bool at_end_of_pool;
+    bool at_end_of_pg;
+
+    int64_t pool_id;
+    int pool_snap_seq;
+    int max_entries;
+    string nspace;
+
+    bufferlist bl;   // raw data read to here
+    std::list<librados::ListObjectImpl> list;
+
+    bufferlist filter;
+
+    bufferlist extra_info;
+
+    // The budget associated with this context, once it is set (>= 0),
+    // the budget is not get/released on OP basis, instead the budget
+    // is acquired before sending the first OP and released upon receiving
+    // the last op reply.
+    int ctx_budget;
+
+    NListContext() : current_pg(0), current_pg_epoch(0), starting_pg_num(0),
+		    at_end_of_pool(false),
+		    at_end_of_pg(false),
+		    pool_id(0),
+		    pool_snap_seq(0),
+                    max_entries(0),
+                    nspace(),
+                    bl(),
+                    list(),
+                    filter(),
+                    extra_info(),
+                    ctx_budget(-1) {}
+
+    bool at_end() const {
+      return at_end_of_pool;
+    }
+
+    uint32_t get_pg_hash_position() const {
+      return current_pg;
+    }
+  };
+
+  struct C_NList : public Context {
+    NListContext *list_context;
+    Context *final_finish;
+    Objecter *objecter;
+    epoch_t epoch;
+    C_NList(NListContext *lc, Context * finish, Objecter *ob) :
+      list_context(lc), final_finish(finish), objecter(ob), epoch(0) {}
+    void finish(int r) {
+      if (r >= 0) {
+        objecter->_nlist_reply(list_context, r, final_finish, epoch);
+      } else {
+        final_finish->complete(r);
+      }
+    }
+  };
+
+  // Old pgls context we still use for talking to older OSDs
   struct ListContext {
     int current_pg;
     collection_list_handle_t cookie;
@@ -1581,6 +1643,8 @@ public:
   void _reopen_session(OSDSession *session);
   void close_session(OSDSession *session);
   
+  void _nlist_reply(NListContext *list_context, int r, Context *final_finish,
+		   epoch_t reply_epoch);
   void _list_reply(ListContext *list_context, int r, Context *final_finish,
 		   epoch_t reply_epoch);
 
@@ -1617,6 +1681,7 @@ public:
     put_op_budget_bytes(op_budget);
   }
   void put_list_context_budget(ListContext *list_context);
+  void put_nlist_context_budget(NListContext *list_context);
   Throttle op_throttle_bytes, op_throttle_ops;
 
  public:
@@ -1687,14 +1752,12 @@ public:
  public:
   bool ms_dispatch(Message *m);
   bool ms_can_fast_dispatch_any() const {
-    return false;
+    return true;
   }
   bool ms_can_fast_dispatch(Message *m) const {
     switch (m->get_type()) {
     case CEPH_MSG_OSD_OPREPLY:
-      /* sadly, we need to solve a deadlock before reenabling.
-       * See tracker issue #9462 */
-      return false;
+      return true;
     default:
       return false;
     }
@@ -2199,6 +2262,8 @@ public:
     return op_submit(o);
   }
 
+  void list_nobjects(NListContext *p, Context *onfinish);
+  uint32_t list_nobjects_seek(NListContext *p, uint32_t pos);
   void list_objects(ListContext *p, Context *onfinish);
   uint32_t list_objects_seek(ListContext *p, uint32_t pos);
 

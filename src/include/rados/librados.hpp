@@ -30,6 +30,8 @@ namespace librados
   struct ObjListCtx;
   struct PoolAsyncCompletionImpl;
   class RadosClient;
+  class ListObjectImpl;
+  struct NObjectIteratorImpl;
 
   typedef void *list_ctx_t;
   typedef uint64_t auid_t;
@@ -63,7 +65,58 @@ namespace librados
   typedef void *completion_t;
   typedef void (*callback_t)(completion_t cb, void *arg);
 
-  class ObjectIterator : public std::iterator <std::forward_iterator_tag, std::string> {
+  class CEPH_RADOS_API ListObject
+  {
+  public:
+    const std::string& get_nspace() const;
+    const std::string& get_oid() const;
+    const std::string& get_locator() const;
+
+    ListObject();
+    ~ListObject();
+    ListObject( const ListObject&);
+    ListObject& operator=(const ListObject& rhs);
+  private:
+    ListObject(ListObjectImpl *impl);
+
+    friend class NObjectIteratorImpl;
+    friend std::ostream& operator<<(std::ostream& out, const ListObject& lop);
+
+    ListObjectImpl *impl;
+  };
+  CEPH_RADOS_API std::ostream& operator<<(std::ostream& out, const librados::ListObject& lop);
+
+  class CEPH_RADOS_API NObjectIterator : public std::iterator <std::forward_iterator_tag, ListObject> {
+  public:
+    static const NObjectIterator __EndObjectIterator;
+    NObjectIterator(): impl(NULL) {}
+    ~NObjectIterator();
+    NObjectIterator(const NObjectIterator &rhs);
+    NObjectIterator& operator=(const NObjectIterator& rhs);
+
+    bool operator==(const NObjectIterator& rhs) const;
+    bool operator!=(const NObjectIterator& rhs) const;
+    const ListObject& operator*() const;
+    const ListObject* operator->() const;
+    NObjectIterator &operator++(); // Preincrement
+    NObjectIterator operator++(int); // Postincrement
+    friend class IoCtx;
+    friend class NObjectIteratorImpl;
+
+    /// get current hash position of the iterator, rounded to the current pg
+    uint32_t get_pg_hash_position() const;
+
+    /// move the iterator to a given hash position.  this may (will!) be rounded to the nearest pg.
+    uint32_t seek(uint32_t pos);
+
+  private:
+    NObjectIterator(ObjListCtx *ctx_);
+    void get_next();
+    NObjectIteratorImpl *impl;
+  };
+
+  // DEPRECATED; Use NObjectIterator
+  class CEPH_RADOS_API ObjectIterator : public std::iterator <std::forward_iterator_tag, std::pair<std::string, std::string> > {
   public:
     static const ObjectIterator __EndObjectIterator;
     ObjectIterator() {}
@@ -92,13 +145,13 @@ namespace librados
     std::pair<std::string, std::string> cur_obj;
   };
 
-  class WatchCtx {
+  class CEPH_RADOS_API WatchCtx {
   public:
     virtual ~WatchCtx();
     virtual void notify(uint8_t opcode, uint64_t ver, bufferlist& bl) = 0;
   };
 
-  struct AioCompletion {
+  struct CEPH_RADOS_API AioCompletion {
     AioCompletion(AioCompletionImpl *pc_) : pc(pc_) {}
     int set_complete_callback(void *cb_arg, callback_t cb);
     int set_safe_callback(void *cb_arg, callback_t cb);
@@ -117,7 +170,7 @@ namespace librados
     AioCompletionImpl *pc;
   };
 
-  struct PoolAsyncCompletion {
+  struct CEPH_RADOS_API PoolAsyncCompletion {
     PoolAsyncCompletion(PoolAsyncCompletionImpl *pc_) : pc(pc_) {}
     int set_callback(void *cb_arg, callback_t cb);
     int wait();
@@ -136,7 +189,7 @@ namespace librados
     OP_FAILOK = LIBRADOS_OP_FLAG_FAILOK,
   };
 
-  class ObjectOperationCompletion {
+  class CEPH_RADOS_API ObjectOperationCompletion {
   public:
     virtual ~ObjectOperationCompletion() {}
     virtual void handle_completion(int r, bufferlist& outbl) = 0;
@@ -177,7 +230,7 @@ namespace librados
    * Batch multiple object operations into a single request, to be applied
    * atomically.
    */
-  class ObjectOperation
+  class CEPH_RADOS_API ObjectOperation
   {
   public:
     ObjectOperation();
@@ -242,7 +295,7 @@ namespace librados
    * Batch multiple object operations into a single request, to be applied
    * atomically.
    */
-  class ObjectWriteOperation : public ObjectOperation
+  class CEPH_RADOS_API ObjectWriteOperation : public ObjectOperation
   {
   protected:
     time_t *pmtime;
@@ -255,7 +308,9 @@ namespace librados
     }
 
     void create(bool exclusive);
-    void create(bool exclusive, const std::string& category);
+    void create(bool exclusive,
+		const std::string& category); ///< NOTE: category is unused
+
     void write(uint64_t off, const bufferlist& bl);
     void write_full(const bufferlist& bl);
     void append(const bufferlist& bl);
@@ -344,7 +399,7 @@ namespace librados
    * Batch multiple object operations into a single request, to be applied
    * atomically.
    */
-  class ObjectReadOperation : public ObjectOperation
+  class CEPH_RADOS_API ObjectReadOperation : public ObjectOperation
   {
   public:
     ObjectReadOperation() {}
@@ -499,7 +554,7 @@ namespace librados
    * p->stat(&stats);
    * ... etc ...
    */
-  class IoCtx
+  class CEPH_RADOS_API IoCtx
   {
   public:
     IoCtx();
@@ -531,7 +586,8 @@ namespace librados
 
     // create an object
     int create(const std::string& oid, bool exclusive);
-    int create(const std::string& oid, bool exclusive, const std::string& category);
+    int create(const std::string& oid, bool exclusive,
+	       const std::string& category); ///< category is unused
 
     /**
      * write bytes to an object at a specified offset
@@ -662,6 +718,13 @@ namespace librados
 
 
     /// Start enumerating objects for a pool
+    NObjectIterator nobjects_begin();
+    /// Start enumerating objects for a pool starting from a hash position
+    NObjectIterator nobjects_begin(uint32_t start_hash_position);
+    /// Iterator indicating the end of a pool
+    const NObjectIterator& nobjects_end() const;
+
+    // DEPRECATED
     ObjectIterator objects_begin();
     /// Start enumerating objects for a pool starting from a hash position
     ObjectIterator objects_begin(uint32_t start_hash_position);
@@ -879,7 +942,7 @@ namespace librados
     IoCtxImpl *io_ctx_impl;
   };
 
-  class Rados
+  class CEPH_RADOS_API Rados
   {
   public:
     static void version(int *major, int *minor, int *extra);
@@ -928,7 +991,11 @@ namespace librados
     /* listing objects */
     int pool_list(std::list<std::string>& v);
     int get_pool_stats(std::list<std::string>& v,
+		       stats_map& result);
+    /// deprecated; use simpler form.  categories no longer supported.
+    int get_pool_stats(std::list<std::string>& v,
 		       std::map<std::string, stats_map>& stats);
+    /// deprecated; categories no longer supported
     int get_pool_stats(std::list<std::string>& v,
                        std::string& category,
 		       std::map<std::string, stats_map>& stats);

@@ -1076,6 +1076,25 @@ TEST(BufferList, buffers) {
   ASSERT_EQ((unsigned)1, bl.buffers().size());
 }
 
+TEST(BufferList, get_contiguous) {
+  bufferptr a("foobarbaz", 9);
+  bufferptr b("123456789", 9);
+  bufferptr c("ABCDEFGHI", 9);
+  bufferlist bl;
+  ASSERT_EQ(0, bl.get_contiguous(0, 0));
+
+  bl.append(a);
+  bl.append(b);
+  bl.append(c);
+  ASSERT_EQ(3u, bl.buffers().size());
+  ASSERT_EQ(0, memcmp("bar", bl.get_contiguous(3, 3), 3));
+  ASSERT_EQ(0, memcmp("456", bl.get_contiguous(12, 3), 3));
+  ASSERT_EQ(0, memcmp("ABC", bl.get_contiguous(18, 3), 3));
+  ASSERT_EQ(3u, bl.buffers().size());
+  ASSERT_EQ(0, memcmp("789ABC", bl.get_contiguous(15, 6), 6));
+  ASSERT_LT(bl.buffers().size(), 3u);
+}
+
 TEST(BufferList, swap) {
   bufferlist b1;
   b1.append('A');
@@ -1210,6 +1229,52 @@ TEST(BufferList, is_n_page_sized) {
     bl.append_zero(CEPH_PAGE_SIZE);
     EXPECT_TRUE(bl.is_n_page_sized());
   }
+}
+
+TEST(BufferList, rebuild_aligned_size_and_memory) {
+  const unsigned SIMD_ALIGN = 32;
+  const unsigned BUFFER_SIZE = 67;
+
+  bufferlist bl;
+  // These two must be concatenated into one memory + size aligned
+  // bufferptr
+  {
+    bufferptr ptr(buffer::create_aligned(2, SIMD_ALIGN));
+    ptr.set_offset(1);
+    ptr.set_length(1);
+    bl.append(ptr);
+  }
+  {
+    bufferptr ptr(buffer::create_aligned(BUFFER_SIZE - 1, SIMD_ALIGN));
+    bl.append(ptr);
+  }
+  // This one must be left alone
+  {
+    bufferptr ptr(buffer::create_aligned(BUFFER_SIZE, SIMD_ALIGN));
+    bl.append(ptr);
+  }
+  // These two must be concatenated into one memory + size aligned
+  // bufferptr
+  {
+    bufferptr ptr(buffer::create_aligned(2, SIMD_ALIGN));
+    ptr.set_offset(1);
+    ptr.set_length(1);
+    bl.append(ptr);
+  }
+  {
+    bufferptr ptr(buffer::create_aligned(BUFFER_SIZE - 1, SIMD_ALIGN));
+    bl.append(ptr);
+  }
+  EXPECT_FALSE(bl.is_aligned(SIMD_ALIGN));
+  EXPECT_FALSE(bl.is_n_align_sized(BUFFER_SIZE));
+  EXPECT_EQ(BUFFER_SIZE * 3, bl.length());
+  EXPECT_FALSE(bl.buffers().front().is_aligned(SIMD_ALIGN));
+  EXPECT_FALSE(bl.buffers().front().is_n_align_sized(BUFFER_SIZE));
+  EXPECT_EQ(5U, bl.buffers().size());
+  bl.rebuild_aligned_size_and_memory(BUFFER_SIZE, SIMD_ALIGN);
+  EXPECT_TRUE(bl.is_aligned(SIMD_ALIGN));
+  EXPECT_TRUE(bl.is_n_align_sized(BUFFER_SIZE));
+  EXPECT_EQ(3U, bl.buffers().size());
 }
 
 TEST(BufferList, is_zero) {
