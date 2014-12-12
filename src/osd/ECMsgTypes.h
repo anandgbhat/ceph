@@ -25,7 +25,7 @@ struct ECSubWrite {
   osd_reqid_t reqid;
   hobject_t soid;
   pg_stat_t stats;
-  ObjectStore::Transaction t;
+  ObjectStore::Transaction *t;
   eversion_t at_version;
   eversion_t trim_to;
   eversion_t trim_rollback_to;
@@ -40,7 +40,7 @@ struct ECSubWrite {
     osd_reqid_t reqid,
     hobject_t soid,
     const pg_stat_t &stats,
-    const ObjectStore::Transaction &t,
+    ObjectStore::Transaction *t,
     eversion_t at_version,
     eversion_t trim_to,
     eversion_t trim_rollback_to,
@@ -56,6 +56,9 @@ struct ECSubWrite {
       temp_added(temp_added),
       temp_removed(temp_removed),
       updated_hit_set_history(updated_hit_set_history) {}
+  ~ECSubWrite() {
+    delete t;
+  }
   void encode(bufferlist &bl) const;
   void decode(bufferlist::iterator &bl);
   void dump(Formatter *f) const;
